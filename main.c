@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <immintrin.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -7,14 +8,15 @@
 #include <assert.h>
 #include <openssl/sha.h>
 #include "libbase58.h"
+#include "sha256.h"
 
 
 struct mask {
-	uint8_t add_data[24];
-	uint8_t sub_data[24];
+	uint8_t add_data[32];
+	uint8_t sub_data[32];
 };
 
-struct mask masks[31];
+struct mask masks[63];
 int masks_cnt;
 
 
@@ -37,6 +39,94 @@ void reverse24(uint8_t* p) {
 		p[i] = p[23 - i];
 		p[23 - i] = tmp;
 	}
+}
+
+
+struct bucket {
+	uint8_t content[21];
+	int cnt_suffixes;
+	uint32_t suffixes[64];
+	uint64_t bitmasks[64];
+};
+struct bucket active_buckets[8];
+int cnt_active_buckets;
+int c;
+
+void flush_buckets() {
+	if(cnt_active_buckets == 8) {
+		c += 8;
+
+		uint8_t content[8][32];
+		for(int i = 0; i < 8; i++) {
+			memcpy(content[i], active_buckets[i].content, sizeof(active_buckets[i].content));
+		}
+		struct bucket* bucket1 = &active_buckets[0];
+
+		uint8_t sha256_digest1[8][32];
+		sha256_parallel8(content, sizeof(bucket1->content), sha256_digest1);
+
+		uint8_t sha256_digest2[8][32];
+		sha256_parallel8(sha256_digest1, sizeof(sha256_digest1[0]), sha256_digest2);
+
+		uint32_t sha[8];
+		for(int i = 0; i < 8; i++) {
+			sha[i] = *(uint32_t*)sha256_digest2[i];
+		}
+
+		for(int i = 0; i < 8; i++) {
+			struct bucket* bucket = &active_buckets[i];
+			for(int j = 0; j < bucket->cnt_suffixes; j++) {
+				if(bucket->suffixes[j] == sha[i]) {
+					printf("%lx\n", bucket->bitmasks[j]);
+				}
+			}
+		}
+	} else {
+		for(int i = 0; i < cnt_active_buckets; i++) {
+			c++;
+
+			struct bucket* bucket = &active_buckets[i];
+
+			uint8_t sha256_digest1[32];
+			SHA256(bucket->content, sizeof(bucket->content), sha256_digest1);
+			uint8_t sha256_digest2[32];
+			SHA256(sha256_digest1, sizeof(sha256_digest1), sha256_digest2);
+
+			uint32_t sha = *(uint32_t*)sha256_digest2;
+
+			for(int i = 0; i < bucket->cnt_suffixes; i++) {
+				if(bucket->suffixes[i] == sha) {
+					printf("%lx\n", bucket->bitmasks[i]);
+				}
+			}
+		}
+	}
+
+	cnt_active_buckets = 0;
+}
+
+void new_bucket(__m256i data) {
+	if(cnt_active_buckets == sizeof(active_buckets) / sizeof(active_buckets[0])) {
+		flush_buckets();
+	}
+	struct bucket* bucket = &active_buckets[cnt_active_buckets];
+	bucket->cnt_suffixes = 0;
+	bucket->content[0] = 0;
+	uint8_t tmp[32];
+	_mm256_storeu_si256((__m256i*)tmp, data);
+	for(int i = 0; i < 20; i++) {
+		bucket->content[1 + i] = tmp[23 - i];
+	}
+	cnt_active_buckets++;
+}
+
+void add_to_bucket(uint32_t suffix, uint32_t bitmask) {
+	assert(cnt_active_buckets > 0);
+	struct bucket* bucket = &active_buckets[cnt_active_buckets - 1];
+	assert(bucket->cnt_suffixes < sizeof(bucket->suffixes) / sizeof(bucket->suffixes[0]));
+	bucket->suffixes[bucket->cnt_suffixes] = suffix;
+	bucket->bitmasks[bucket->cnt_suffixes] = bitmask;
+	bucket->cnt_suffixes++;
 }
 
 
@@ -141,67 +231,68 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	uint8_t iter_data[24];
-	size_t binsz = sizeof(iter_data);
+	uint64_t iter_data[4];
+	iter_data[3] = 0;
+	size_t binsz = 24;
 	if(!b58tobin(iter_data, &binsz, s, 0)) {
 		fprintf(stderr, "Could not decode base58 data.\n");
 		return 1;
 	}
-	reverse24(iter_data);
+	reverse24((uint8_t*)iter_data);
 
 
-	uint8_t prev_iter_data[24];
-	memset(prev_iter_data, 0, sizeof(prev_iter_data));
+	struct mask* base_mask = masks + masks_cnt - 1;
+	uint64_t prev_bitmask = 0;
 
-	int c = 0;
+	// bitmask == 0
+	__m256i prev_iter_data = _mm256_lddqu_si256((__m256i*)iter_data);
+	new_bucket(prev_iter_data);
+	add_to_bucket(0, 0);
 
-	uint32_t active_sha = 0;
-	uint32_t active_bitmask = 0;
-	for(uint32_t bitmask_generator = 0; bitmask_generator < (1 << masks_cnt); bitmask_generator++) {
-		if(bitmask_generator != 0) {
-			uint32_t bitmask = bitmask_generator ^ (bitmask_generator >> 1);
+	uint64_t tightloop_iter_data[4];
+	memcpy(tightloop_iter_data, iter_data, sizeof(iter_data));
 
-			int i = __builtin_ffs(bitmask ^ active_bitmask) - 1;
-			assert(i >= 0 && i < masks_cnt);
+	for(uint64_t bitmask_generator = 1; bitmask_generator != (1ULL << masks_cnt); bitmask_generator++) {
+		uint64_t bitmask = bitmask_generator ^ (bitmask_generator >> 1);
+		struct mask* mask = base_mask;
+		uint64_t tmp1;
+		uint64_t* diff_data;
+		asm volatile(
+			"xorq %1, %2;"
+			"tzcntq %2, %0;"
+			"shlq $6, %0;"
+			"subq %0, %4;"
+			"movq %4, %3;"
+			"movq %4, %0;"
+			"add $32, %0;"
+			"testq %1, %2;"
+			"cmove %0, %3;"
+			"movq (%3), %0;"
+			"addq %0, %5;"
+			"movq 0x8(%3), %0;"
+			"adcq %0, %6;"
+			"movq 0x10(%3), %0;"
+			"adcq %0, %7;"
+			"movq %1, %2;"
+			: "=&r"(tmp1), "+r"(bitmask), "+r"(prev_bitmask), "=&r"(diff_data), "+r"(mask), "+r"(tightloop_iter_data[0]), "+r"(tightloop_iter_data[1]), "+r"(tightloop_iter_data[2])
+			:
+			: "memory", "flags"
+		);
 
-			struct mask mask = masks[masks_cnt - 1 - i];
-			int carry = 0;
-			uint8_t* diff_data = ((bitmask >> i) & 1) ? mask.add_data : mask.sub_data;
-			for(int j = 0; j < 3; j++) {
-				uint64_t next_value = ((uint64_t*)iter_data)[j] + ((uint64_t*)diff_data)[j];
-				int next_carry = next_value < ((uint64_t*)iter_data)[j] || next_value + carry < next_value;
-				next_value += carry;
-				carry = next_carry;
-				((uint64_t*)iter_data)[j] = next_value;
-			}
-
-			active_bitmask = bitmask;
-		}
-
+		prev_iter_data = _mm256_insert_epi32(prev_iter_data, ((uint32_t*)tightloop_iter_data)[0], 0);
 		if(
-			active_bitmask == 0 ||
-			((uint32_t*)iter_data)[1] != ((uint32_t*)prev_iter_data)[1] ||
-			((uint64_t*)iter_data)[1] != ((uint64_t*)prev_iter_data)[1] ||
-			((uint64_t*)iter_data)[2] != ((uint64_t*)prev_iter_data)[2]
+			tightloop_iter_data[0] != prev_iter_data[0] ||
+			tightloop_iter_data[1] != prev_iter_data[1] ||
+			tightloop_iter_data[2] != prev_iter_data[2]
 		) {
-			uint8_t tmp[21];
-			tmp[0] = 0;
-			for(int i = 0; i < 20; i++) {
-				tmp[1 + i] = iter_data[23 - i];
-			}
-			uint8_t sha256_digest1[32];
-			SHA256(tmp, sizeof(tmp), sha256_digest1);
-			uint8_t sha256_digest2[32];
-			SHA256(sha256_digest1, sizeof(sha256_digest1), sha256_digest2);
-			c++;
-			active_sha = *(uint32_t*)sha256_digest2;
-			memcpy(prev_iter_data, iter_data, sizeof(iter_data));
+			prev_iter_data = _mm256_lddqu_si256((__m256i*)tightloop_iter_data);
+			new_bucket(prev_iter_data);
 		}
 
-		if(htonl(*(uint32_t*)iter_data) == active_sha) {
-			printf("%d\n", active_bitmask);
-		}
+		add_to_bucket(htonl(*(uint32_t*)tightloop_iter_data), bitmask);
 	}
+
+	flush_buckets();
 
 	printf("SHA was called %d times\n", 2 * c);
 
