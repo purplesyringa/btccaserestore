@@ -1,4 +1,4 @@
-# caserestore
+# btccaserestore
 
 An utility to restore Bitcoin addresses when letter case is lost.
 
