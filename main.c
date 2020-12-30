@@ -147,9 +147,14 @@ void add_to_bucket(uint32_t suffix, uint32_t bitmask, struct bucket* bucket) {
 
 
 int main(int argc, char** argv) {
-	if(argc <= 1 || strlen(argv[1]) > sizeof(s) - 1) {
+	if(argc <= 1) {
 		printf("Usage: %s <lowercase_of_bitcoin_address>\n", argv[0]);
 		return 0;
+	}
+
+	if(strlen(argv[1]) > sizeof(s) - 1) {
+		fprintf(stderr, "Too long string.\n");
+		return 1;
 	}
 
 	strcpy(s, argv[1]);
@@ -339,9 +344,34 @@ int main(int argc, char** argv) {
 	exit(0);
 }
 
-// The maximum possible time is below 35s
-// For 98% addresses, the time is below 22s
-// For 70% addresses, the time is below 9s
-// For 50% addresses, the time is below 5s
-// For 40% addresses, the time is below 2s
-// For 25% addresses, the time is below 1s
+// maximum theoretical ("1" + 33 letters): 33.208s
+// 1LgqZfbtr6dukbjHdjWBEmmthq1shEv3y1: 5.642s
+// 1fznczNZUMEMvCiqSmCZGUiv5sVnRcsTD: 4.297s
+// 1MrwmugtdphP3CfYxXEgdefyjJV3LKMsW2: 3.667s
+// 1LdeDdtifLpRwizQkzYmWWVuUpuDhrGz4f: 3.212s (two matches)
+// 18ryVioVmwFYzhRZKTjKqGYCjkUjoxH3k6: 3.203s
+// 1HKcfPD3LhwzgrSwkSFFKUiTJJ3MvbgRTw: 2.137s
+// 1LtvsjbtQ2tY7SCtCZzC4KhErqEK3bXD4n: 1.815s
+// 17UQMKMwdYqptM3nzeNqdXs31X3UvN8yHg: 1.807s
+// 1MeFqFfFFGQfa1J3gJyYYUvb5Lksczq7nH: 1.621s
+// 1CeEXxqemr5CcVQAAmrW13QYwZV4kAkQz6: 1.609s
+// 1DocsYf2tZVVMEMJFHiDsppmFicZCWkVv1: 1.706s
+// 1BLnYeYMYhCQUiCVQKesJwa22Jzpcdd3Y6: 1.419s
+// 1NAMEz7stUPZErkV1d3yLkVWQFa4PTqDNv: 1.049s
+// 1J9bM4MbnTgsNcLWGnyKxT3m9jFQThxhkj: 1.040s
+// 138R53t3ZW7KDfSfxVpWUsMXgwUnsDNXLP: 0.910s
+// 15CEFKBRHFfAP9rmL6hhLmHoXrrgmw4B5o: 0.622s
+// 1JChcgVVMqBy5fmN4er6afLhcoD7YzRDP6: 0.406s
+// 136dgfmQnaxaTVB1GcYhkX4WG1L8uco4AZ: 0.345s
+// 1SiTEs2D3rCBxeMoLHXei2UYqFcxctdwB: 0.290s
+// 1TaLkFrMwvbNsooF4ioKAY9EuxTBTjipT: 0.215s
+// 1HMLvnRWViMnuvZc5LK4Dm86sZNcSH1jdh: 0.211s
+// 142jqssVAj2iRxMACJg2dzipB5oicZYz5w: 0.119s
+// 1HeLLo4uzjaLetFx6NH3PMwFP3qbRbTf3D: 0.107s
+// 1FwH89xyniDgy3t6fCWrggLs22MnGPZ5K5: 0.091s
+// 1N77kxgd29cR8w9xt481JDJEtYdX1hCqAR: 0.042s
+// 1LfvE91ZF18jdG3wW62Dw7NtfTZh737KPL: 0.041s
+// 1Name2NXVi1RDPDgf5617UoW7xA6YrhM9F: 0.028s
+// 1ZeroABd9C36y31kQ1UxJ9RJ875EQD7YH: 0.018s
+// 1BLogC9LN4oPDcruNz3qo1ysa133E9AGg8: 0.008s
+// 1MaiL5gfBM1cyb4a8e3iiL8L5gXmoAJu27: 0.004s
