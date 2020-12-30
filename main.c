@@ -96,12 +96,6 @@ void flush_buckets() {
 					s[pos] = (((bitmask >> (masks_cnt - 1 - k)) & 1) ? tolower : toupper)(s[pos]);
 				}
 				printf("%s\n", s);
-
-				fprintf(stderr, "# %lx (bucket %d, sha %x, suffix %x, content ", bucket->bitmasks[j1], i, sha[i], bucket->suffixes[j1]);
-				for(int k = 0; k < 21; k++) {
-					fprintf(stderr, "%02x", bucket->content[k]);
-				}
-				fprintf(stderr, ")\n");
 			}
 			j += 8;
 		}
@@ -338,8 +332,6 @@ int main(int argc, char** argv) {
 	}
 
 	flush_buckets();
-
-	printf("SHA was called %d times\n", 2 * c);
 
 	exit(0);
 }
