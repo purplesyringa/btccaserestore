@@ -48,6 +48,8 @@ static uint32_t constants[64] = {
 
 
 void sha256_parallel8(uint8_t s[8][32], uint32_t size, uint8_t result[8][32]) {
+	// memset(result, 0, sizeof(result));
+
 	assert(size <= 63);
 
 	uint8_t d[8][64];
@@ -60,29 +62,27 @@ void sha256_parallel8(uint8_t s[8][32], uint32_t size, uint8_t result[8][32]) {
 
 	__m256i w[64];
 	for(int j = 0; j < 16; j++) {
-		uint32_t tmp[8];
-		for(int i = 0; i < 8; i++) {
-			tmp[i] = ntohl(((uint32_t*)d[i])[j]);
-		}
-		memcpy(&w[j], tmp, sizeof(tmp));
+		w[j] = _mm256_i32gather_epi32((uint32_t*)d + j, _mm256_set_epi32(7*64, 6*64, 5*64, 4*64, 3*64, 2*64, 1*64, 0*64), 1);
 	}
+	for(int i = 0; i < 128; i++) {
+		((uint32_t*)w)[i] = ntohl(((uint32_t*)w)[i]);
+	}
+
 	for(int j = 16; j < 64; j++) {
 		__m256i x15 = w[j - 15];
 		__m256i x2 = w[j - 2];
-		_mm256_storeu_si256(
-			&w[j],
+		w[j] = _mm256_add_epi32(
 			_mm256_add_epi32(
-				_mm256_add_epi32(
-					_mm256_xor_si256(_mm256_xor_si256(AVXROR(x15, 7), AVXROR(x15, 18)), _mm256_srli_epi32(x15, 3)),
-					w[j - 16]
-				),
-				_mm256_add_epi32(
-					_mm256_xor_si256(_mm256_xor_si256(AVXROR(x2, 17), AVXROR(x2, 19)), _mm256_srli_epi32(x2, 10)),
-					w[j - 7]
-				)
+				_mm256_xor_si256(_mm256_xor_si256(AVXROR(x15, 7), AVXROR(x15, 18)), _mm256_srli_epi32(x15, 3)),
+				w[j - 16]
+			),
+			_mm256_add_epi32(
+				_mm256_xor_si256(_mm256_xor_si256(AVXROR(x2, 17), AVXROR(x2, 19)), _mm256_srli_epi32(x2, 10)),
+				w[j - 7]
 			)
 		);
 	}
+
 	for(int j = 0; j < 64; j++) {
 		_mm256_storeu_si256(&w[j], _mm256_add_epi32(_mm256_load_si256(&w[j]), _mm256_set1_epi32(constants[j])));
 	}
