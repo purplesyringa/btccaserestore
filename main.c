@@ -6,7 +6,6 @@
 #include <string.h>
 #include <stdint.h>
 #include <assert.h>
-#include <openssl/sha.h>
 #include "libbase58.h"
 #include "sha256.h"
 
@@ -14,10 +13,13 @@
 struct mask {
 	uint8_t add_data[24];
 	uint8_t sub_data[24];
-};
+	int chr_pos;
+} __attribute__((aligned(64)));
 
 struct mask masks[63];
 int masks_cnt;
+
+char s[35];
 
 
 static const int8_t b58digits_map[] = {
@@ -47,87 +49,66 @@ struct bucket {
 	uint32_t suffixes[32];
 	int cnt_suffixes;
 	uint8_t content[21];
-} __attribute__((aligned(1024)));
+} __attribute__((aligned(512)));
 struct bucket active_buckets[8];
 int cnt_active_buckets;
+struct bucket* active_bucket[4];
 int c;
 
 void flush_buckets() {
-	if(cnt_active_buckets == 8) {
-		c += 8;
+	c += cnt_active_buckets;
 
-		uint8_t content[8][32];
-		for(int i = 0; i < 8; i++) {
-			memcpy(content[i], active_buckets[i].content, sizeof(active_buckets[i].content));
-		}
-		struct bucket* bucket1 = &active_buckets[0];
+	uint8_t content[8][32];
+	for(int i = 0; i < cnt_active_buckets; i++) {
+		memcpy(content[i], active_buckets[i].content, sizeof(active_buckets[i].content));
+	}
+	struct bucket* bucket1 = &active_buckets[0];
 
-		uint8_t sha256_digest1[8][32];
-		sha256_parallel8(content, sizeof(bucket1->content), sha256_digest1);
+	uint8_t sha256_digest1[8][32];
+	sha256_parallel8(content, sizeof(bucket1->content), sha256_digest1);
 
-		uint8_t sha256_digest2[8][32];
-		sha256_parallel8(sha256_digest1, sizeof(sha256_digest1[0]), sha256_digest2);
+	uint8_t sha256_digest2[8][32];
+	sha256_parallel8(sha256_digest1, sizeof(sha256_digest1[0]), sha256_digest2);
 
-		uint32_t sha[8];
-		for(int i = 0; i < 8; i++) {
-			sha[i] = *(uint32_t*)sha256_digest2[i];
-		}
+	uint32_t sha[8];
+	for(int i = 0; i < cnt_active_buckets; i++) {
+		sha[i] = *(uint32_t*)sha256_digest2[i];
+	}
 
-		for(int i = 0; i < 8; i++) {
-			struct bucket* bucket = &active_buckets[i];
+	for(int i = 0; i < cnt_active_buckets; i++) {
+		struct bucket* bucket = &active_buckets[i];
 
-			int j = 0;
-			__m256i mask = _mm256_set1_epi32(sha[i]);
-			while(j + 8 <= bucket->cnt_suffixes) {
-				uint32_t cmp = _mm256_movemask_epi8(_mm256_cmpeq_epi32(_mm256_lddqu_si256(bucket->suffixes + j), mask));
-				cmp &= 0x11111111;
-				while(__builtin_expect(cmp, 0)) {
-					int j1 = j + (__builtin_ffs(cmp) - 1) / 4;
-					cmp &= cmp - 1;
-
-					printf("# %lx (bucket %d, sha %x, suffix %x, content ", bucket->bitmasks[j1], i, sha[i], bucket->suffixes[j1]);
-					for(int k = 0; k < 21; k++) {
-						printf("%02x", bucket->content[k]);
-					}
-					printf(")\n");
-				}
-				j += 8;
+		int j = 0;
+		__m256i mask = _mm256_set1_epi32(sha[i]);
+		while(j < bucket->cnt_suffixes) {
+			uint32_t cmp = _mm256_movemask_epi8(_mm256_cmpeq_epi32(_mm256_lddqu_si256((__m256i*)(bucket->suffixes + j)), mask));
+			cmp &= 0x11111111;
+			if(bucket->cnt_suffixes - j < 8) {
+				cmp &= (1U << (4 * (bucket->cnt_suffixes - j))) - 1;
 			}
+			while(__builtin_expect(cmp, 0)) {
+				int j1 = j + (__builtin_ffs(cmp) - 1) / 4;
+				cmp &= cmp - 1;
 
-			/*
-			for(; j < bucket->cnt_suffixes; j++) {
-				if(bucket->suffixes[j] == sha[i]) {
-					printf("@ %lx (bucket %d, sha %x, suffix %x, content ", bucket->bitmasks[j], i, sha[i], bucket->suffixes[j]);
-					for(int k = 0; k < 21; k++) {
-						printf("%02x", bucket->content[k]);
-					}
-					printf(")\n");
+				uint64_t bitmask = bucket->bitmasks[j1];
+				for(int k = 0; k < masks_cnt; k++) {
+					int pos = masks[k].chr_pos;
+					s[pos] = (((bitmask >> (masks_cnt - 1 - k)) & 1) ? tolower : toupper)(s[pos]);
 				}
-			}
-			*/
-		}
-	} else {
-		for(int i = 0; i < cnt_active_buckets; i++) {
-			c++;
+				printf("%s\n", s);
 
-			struct bucket* bucket = &active_buckets[i];
-
-			uint8_t sha256_digest1[32];
-			SHA256(bucket->content, sizeof(bucket->content), sha256_digest1);
-			uint8_t sha256_digest2[32];
-			SHA256(sha256_digest1, sizeof(sha256_digest1), sha256_digest2);
-
-			uint32_t sha = *(uint32_t*)sha256_digest2;
-
-			for(int i = 0; i < bucket->cnt_suffixes; i++) {
-				if(bucket->suffixes[i] == sha) {
-					printf("%lx\n", bucket->bitmasks[i]);
+				fprintf(stderr, "# %lx (bucket %d, sha %x, suffix %x, content ", bucket->bitmasks[j1], i, sha[i], bucket->suffixes[j1]);
+				for(int k = 0; k < 21; k++) {
+					fprintf(stderr, "%02x", bucket->content[k]);
 				}
+				fprintf(stderr, ")\n");
 			}
+			j += 8;
 		}
 	}
 
 	cnt_active_buckets = 0;
+	memset(active_bucket, 0, sizeof(active_bucket));
 }
 
 struct bucket* new_bucket(uint8_t* data) {
@@ -136,7 +117,6 @@ struct bucket* new_bucket(uint8_t* data) {
 	}
 	struct bucket* bucket = &active_buckets[cnt_active_buckets];
 	bucket->cnt_suffixes = 0;
-	memset(bucket->suffixes, 0, sizeof(bucket->suffixes));
 	bucket->content[0] = 0;
 	for(int i = 0; i < 20; i++) {
 		bucket->content[1 + i] = data[23 - i];
@@ -147,7 +127,7 @@ struct bucket* new_bucket(uint8_t* data) {
 
 void add_to_bucket(uint32_t suffix, uint32_t bitmask, struct bucket* bucket) {
 	int suf = bucket->cnt_suffixes;
-	assert(suf < sizeof(bucket->bitmasks) / sizeof(bucket->bitmasks[0]));
+	assert(suf >= 0 && suf < sizeof(bucket->bitmasks) / sizeof(bucket->bitmasks[0]));
 	bucket->suffixes[suf] = suffix;
 	bucket->bitmasks[suf] = bitmask;
 	bucket->cnt_suffixes++;
@@ -167,12 +147,12 @@ void add_to_bucket(uint32_t suffix, uint32_t bitmask, struct bucket* bucket) {
 
 
 int main(int argc, char** argv) {
-	if(argc <= 1 || strlen(argv[1]) > 40) {
+	if(argc <= 1 || strlen(argv[1]) > sizeof(s) - 1) {
 		printf("Usage: %s <lowercase_of_bitcoin_address>\n", argv[0]);
 		return 0;
 	}
 
-	char* s = argv[1];
+	strcpy(s, argv[1]);
 
 	for(char* p = s; *p; p++) {
 		*p = toupper((int)*p);
@@ -222,10 +202,10 @@ int main(int argc, char** argv) {
 			case 'Y':
 			case 'Z': {
 				int power58 = strlen(s) - 1 - (p - s);
-				assert(b58digits_map[*p] != -1 && b58digits_map[tolower((int)*p)] != -1);
+				assert(b58digits_map[(int)*p] != -1 && b58digits_map[tolower((int)*p)] != -1);
 
 				char diff_str[128];
-				diff_str[0] = b58alphabet[b58digits_map[tolower((int)*p)] - b58digits_map[*p]];
+				diff_str[0] = b58alphabet[b58digits_map[tolower((int)*p)] - b58digits_map[(int)*p]];
 				memset(diff_str + 1, '1', power58);
 				diff_str[1 + power58] = '\0';
 
@@ -240,6 +220,8 @@ int main(int argc, char** argv) {
 					return 1;
 				}
 				reverse24(diff_data);
+
+				masks[masks_cnt].chr_pos = p - s;
 
 				memcpy(masks[masks_cnt].add_data, diff_data, sizeof(diff_data));
 
@@ -267,12 +249,11 @@ int main(int argc, char** argv) {
 		}
 	}
 
-
 	uint64_t limit = masks_cnt < 2 ? 1 : (1ULL << (masks_cnt - 2));
 	uint64_t shift = masks_cnt < 2 ? 0 : masks_cnt - 2;
 
 	uint64_t iter_data[3][4]; // the array index order is swapped for optimization
-	uint8_t prev_iter_data[4][24];
+	uint64_t prev_iter_data[4][3];
 	memset(prev_iter_data, 0, sizeof(prev_iter_data));
 
 	for(int high = 0; high < 4; high++) {
@@ -286,7 +267,7 @@ int main(int argc, char** argv) {
 
 		for(int i = 0; i < 2; i++) {
 			if(((high >> i) & 1) && i < masks_cnt) {
-				ADD24BYTES(tmp_iter_data, masks[i].add_data)
+				ADD24BYTES(tmp_iter_data, masks[1 - i].add_data)
 			}
 		}
 
@@ -295,7 +276,6 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	struct bucket* active_bucket[4];
 
 	uint64_t prev_bitmask_low = 0;
 	for(uint64_t bitmask_generator = 0; bitmask_generator < limit; bitmask_generator++) {
@@ -307,7 +287,7 @@ int main(int argc, char** argv) {
 			struct mask* mask = &masks[masks_cnt - 1 - i];
 			uint8_t* diff_data = ((bitmask_low >> i) & 1) ? mask->add_data : mask->sub_data;
 
-			uint64_t* src = diff_data;
+			uint64_t* src = (uint64_t*)diff_data;
 			__m256i carry256 = _mm256_setzero_si256();
 
 			for(int j = 0; j < 3; j++) {
@@ -334,18 +314,18 @@ int main(int argc, char** argv) {
 
 		for(int high = 0; high < 4; high++) {
 			if(
-				bitmask_generator == 0 ||
-				(iter_data[0][high] >> 32) != (((uint64_t*)prev_iter_data[high])[0] >> 32) ||
-				iter_data[1][high] != ((uint64_t*)prev_iter_data[high])[1] ||
-				iter_data[2][high] != ((uint64_t*)prev_iter_data[high])[2]
+				(iter_data[0][high] >> 32) != (prev_iter_data[high][0] >> 32) ||
+				iter_data[1][high] != prev_iter_data[high][1] ||
+				iter_data[2][high] != prev_iter_data[high][2] ||
+				active_bucket[high] == NULL
 			) {
 				for(int i = 0; i < 3; i++) {
-					((uint64_t*)prev_iter_data[high])[i] = iter_data[i][high];
+					prev_iter_data[high][i] = iter_data[i][high];
 				}
-				active_bucket[high] = new_bucket(prev_iter_data[high]);
+				active_bucket[high] = new_bucket((uint8_t*)prev_iter_data[high]);
 			}
 
-			uint64_t bitmask = bitmask_low | (high << shift);
+			uint64_t bitmask = bitmask_low | ((uint64_t)high << shift);
 			add_to_bucket(htonl((uint32_t)iter_data[0][high]), bitmask, active_bucket[high]);
 		}
 
@@ -359,6 +339,9 @@ int main(int argc, char** argv) {
 	exit(0);
 }
 
-// 33s -- with SHA
-// 16s -- without SHA
-// 10s -- without bucketing
+// The maximum possible time is below 35s
+// For 98% addresses, the time is below 22s
+// For 70% addresses, the time is below 9s
+// For 50% addresses, the time is below 5s
+// For 40% addresses, the time is below 2s
+// For 25% addresses, the time is below 1s
