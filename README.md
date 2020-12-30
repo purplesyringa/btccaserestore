@@ -9,7 +9,7 @@ $ ./caserestore 1a1zp1ep5qgefi2dmptftl5slmv7divfna
 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
 ```
 
-Restoring case takes an average of 1 second (up to 5 seconds) for most addresses, and only more than 30 seconds for 0.5% addresses.
+Restoring case takes an average of 1 second (up to 5 seconds) for most addresses, and only more than 30 seconds for 0.5% addresses. The runtime was measured on `Intel(R) Core(TM) i7-4790 CPU @ 3.60GHz`.
 
 
 ## Build
@@ -17,6 +17,9 @@ Restoring case takes an average of 1 second (up to 5 seconds) for most addresses
 ```shell
 $ make
 ```
+
+An x86-architecture processor with AVX2 extension is required.
+
 
 ## Usage
 
